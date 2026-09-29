@@ -1,45 +1,161 @@
-# DSH SSH Manager
+# DSH SSH 主机管理插件
 
-DSH Web Host/Client plugin for managing password SSH servers. Users can add hosts from the Settings > SSH 主机 page, or ask an Agent to read a file of IP addresses, usernames and passwords and call `ssh_host_apply`. The plugin does not read user files itself. The Agent may extract fields from CSV, tables or plain text; it supplies normalized host objects to the tool.
+> 在 DSH Web GUI 里集中管理**用密码登录**的 SSH 服务器，把「执行命令」和「上传文件」交给 Agent 去做，同时让常见的**删除命令必须先经你批准**。
 
-## Setup
+## 为什么需要它
 
-Install dependencies in this package with `pnpm install`. Package with `pnpm pack`, then install the resulting tarball as a DSH bundle; its `cordis.patch.yml` adds the Host/Client row. The profile installer may request explicit build permission for `ssh2@1.17.0` and `cpu-features@0.0.10`; neither package's install script runs until you approve it. Open **设置 > SSH 主机** after the bundle activates; the page lists saved hosts and its **添加主机** button creates one by hand (IP, port, account, password), alongside Agent-driven import. The package provides the Host entry `lib/index.js` and Web Client entry `lib/client.js`; it does not modify the DSH checkout. Run `pnpm check` for focused tests. Installation alone is not enough for a running GUI: replacing an already loaded bundle requires a DSH restart, otherwise the process keeps serving the previous Host and Client halves.
+服务器多了以后，账号密码通常散落在各种笔记和文件里；想让 Agent 帮忙运维，又不想每次都把地址密码贴进对话；更担心它手一抖执行了 `rm -rf`。
 
-Saved hosts live at `~/.dsh/ssh-manager/hosts.json` (override with `DSH_SSH_HOSTS_FILE`). This file intentionally contains plaintext passwords as requested and is created with mode `0600`; its directory uses `0700`. The UI and read-only Tools never return passwords. Importing passwords via an Agent tool places the values in that session's tool arguments and persistent transcript.
+这个插件把主机信息收进一份受管理的清单：
 
-## Tags
+- Agent **只能操作清单里的主机 ID**，不能凭空指定任意 IP、账号或密钥路径；
+- 给人看的界面和给模型看的工具结果，**都不会回显密码**；
+- 命中常见删除命令时，**连接之前**就先向你申请批准。
 
-Each host carries `tags`: lowercase, de-duplicated, sorted, at most 20 tags of 32 characters drawn from letters, digits, `-`, `_` and `.`. A stored host without tags reads as an empty list, so existing files need no migration.
+## 功能一览
 
-The page shows tag pills on each host row, a chip per existing tag with its host count, and a 管理标签 dialog that renames a tag (merging it into an existing name) or deletes it from every host. Selecting several chips narrows by **intersection** — every selected tag must be present — and the search box additionally matches tag names, so chips narrow while search locates. Tag chips are organizational only: they never grant or revoke access, which remains the `enabled` flag.
+| 能力 | 说明 |
+| --- | --- |
+| 主机管理界面 | 设置 → **SSH 主机**：新增、编辑、删除、启用/停用、测试连接 |
+| 对话批量导入 | 你给一个文件（IP、账号、密码），Agent 读取解析后批量写入；保存前逐项列出变更请你确认 |
+| 标签 | 给主机打标签，按标签筛选（多选取交集）与检索；支持重命名/合并 |
+| 远程执行命令 | 非交互命令，30 秒超时，stdout/stderr 各上限 64 KiB，返回退出码与信号 |
+| 文件上传 | SFTP 单文件上传到绝对路径，仅限会话工作区内的文件，上限 100 MiB，默认不覆盖 |
+| 删除命令审核 | 命中常见删除命令时，连接前经 DSH 审批服务向你申请批准 |
+| 主机指纹 | 首次认证成功记录 SHA-256 主机指纹，之后发生变化即拒绝连接 |
 
-Agent-side, `ssh_hosts` returns each host's tags plus a `tags` summary of every tag in use; reuse those names instead of inventing near-duplicates. `ssh_host_apply`, `ssh_host_create` and `ssh_host_update` accept `tags` (replace the list), `addTags` and `removeTags` (adjust it). The confirmation preview names the tag change and never includes the password.
+## 安装
 
+前置条件：一个可用的 **DSH Web GUI**。本插件同时提供 Host 半区（跑在 DSH 进程里）和浏览器半区（设置页），所以安装的是 bundle。
 
-Example normalized Tool input:
+### 1. 获取并打包
+
+```sh
+git clone git@github.com:namehousiqi/dsh-ssh-manager.git
+cd dsh-ssh-manager
+pnpm install
+pnpm pack
+```
+
+打包会得到 `workspace-dsh-ssh-manager-<版本>.tgz`。
+
+### 2. 安装到 DSH
+
+- **图形方式（推荐）**：打开 DSH 的插件管理器，把上面的 tgz 作为 bundle 安装。
+- **命令行方式**：
+
+  ```sh
+  dsh plugin add ./workspace-dsh-ssh-manager-<版本>.tgz
+  ```
+
+包名是 `@workspace/dsh-ssh-manager`，它带的 `cordis.patch.yml` 会插入一行 `include:dsh-ssh-manager`，同时挂上 Host 与浏览器两侧。
+
+### 3. 允许依赖的构建脚本
+
+安装时包管理器会请求 `ssh2@1.17.0` 与 `cpu-features@0.0.10` 的安装脚本许可。**在你明确同意之前，这些脚本不会运行**。它们编译的是可选的原生加速模块，装不上也能用（`ssh2` 会回退到纯 JavaScript 实现），只是性能路径略短。
+
+### 4. 重启 DSH（很重要）
+
+**安装完必须重启 DSH。** 如果只是覆盖安装，进程里跑的还是内存中的旧版本，设置页和工具都不会更新——这一点很容易被误判成"插件坏了"。
+
+### 5. 打开设置页
+
+重启后打开 **设置**（侧边栏底部）→ **SSH 主机**。
+
+## 快速上手
+
+### 方式一：手动添加
+
+点右上角**添加主机**，填 IP/地址、端口（默认 22）、账号、密码（可勾选"显示密码"核对），保存即可。
+
+之后在列表里可以：**测试**（真的连一次验证密码）、**编辑**、**删除**、**停用**。编辑时密码留空表示保持不变。
+
+### 方式二：让 Agent 从文件导入
+
+```
+你：这是我的主机清单 /path/to/hosts.txt，帮我导进去
+```
+
+Agent 会读取文件、解析出 IP/账号/密码，然后调用 `ssh_host_apply`：它先把**新增和修改逐项列出来**（含标签变化，但不含密码）向你确认，你确认后才写入。文件格式不限，CSV、表格、纯文本都可以；某条信息不全时 Agent 会追问。
+
+对应的工具入参形如：
 
 ```json
 {
   "hosts": [
-    { "host": "192.0.2.10", "username": "deploy", "password": "password from the supplied file", "name": "staging" },
-    { "host": "192.0.2.11", "username": "root", "password": "another password", "port": 2222 }
+    { "host": "192.0.2.10", "username": "deploy", "password": "文件里的密码", "name": "staging" },
+    { "host": "192.0.2.11", "username": "root", "password": "另一个密码", "port": 2222 }
   ]
 }
 ```
 
-`ssh_host_apply` validates all entries, previews created/changed hosts without passwords, asks the current root Agent's user for confirmation once, then saves the batch atomically. The tools `ssh_host_create` and `ssh_host_update` cover individual changes. The management page also edits, enables/disables, removes and tests hosts. Password-only changes are accepted, and leaving the password empty in the edit form retains the saved value.
+`ssh_host_apply` 会先整体校验再原子写入，避免"只写进去前 5 台"这种半成品状态。只想改一台时，用 `ssh_host_create` 或 `ssh_host_update`。
 
-`ssh_hosts`, `ssh_test`, `ssh_exec` and `ssh_upload` operate only on enabled stored host IDs. `ssh_exec` runs one non-interactive command with a 30-second limit and returns exit code, stdout and stderr (each capped at 64 KiB). `ssh_upload` sends one regular file from the current session workspace to an absolute remote path via SFTP, at most 100 MiB; replacement requires `overwrite: true`. Upload does not create remote directories.
+## 标签
 
-The first successful SSH authentication records the server's SHA-256 host-key fingerprint (trust on first use); later changes are rejected. Editing the address or port clears the pin. Connect to a new host only after verifying the endpoint yourself if authenticity matters.
+**规则**：小写归一、去重、排序；每台主机最多 20 个标签，每个标签 1–32 个字符，可用中英文、数字、`-`、`_`、`.`。旧记录没有标签时读作空列表，**不需要迁移**。
 
-The settings page lays each host out as a wrapping flex row, so **测试 / 编辑 / 删除 / 停用** stay visible when the settings panel is narrow. `scripts/layout-check.mjs` measures that in a real browser: it renders the client bundle at a given panel width and reports whether every action button is inside the panel and whether the row overflows. It needs Playwright from a local checkout (`PLAYWRIGHT_ENTRY`) plus a Chromium build (`BROWSER_PATH`), so it is not part of `pnpm check`.
+**筛选与检索**：主机行内显示标签；筛选区每个标签是一枚带主机数的芯片，多选取**交集**（选中 `prod` 和 `db` 就是"既是生产又是数据库"）；搜索框同时匹配标签名，所以芯片负责收窄、搜索负责定位。
 
-## File deletion review
+**管理标签**：点「管理标签」可对某个标签**重命名**（改成已存在的名字即自动合并）或**删除**（从所有主机移除）。
 
-The plugin scans `ssh_exec` commands for common file-deleting forms: `rm`, `rmdir`, `unlink`, `shred`, `find -delete/-exec`, `xargs rm`, `rsync --delete/--remove-source-files`, `git clean` and trash commands. Matches trigger DSH `approval.request` **before connecting**. Only `allowed-once` executes that exact command. A session with `never` approval policy or without an available approver refuses these commands. Docker, Kubernetes and database deletions are out of scope. The scan is heuristic: scripts, aliases, variables and arbitrary programs can delete files without matching; other SSH invocations outside this plugin are not intercepted.
+标签只用于组织，**不参与权限判断**——一台机器能否被 Agent 使用，始终由「启用/停用」决定。
 
-## Known limitations
+**Agent 侧**：`ssh_hosts` 会返回每台主机的标签和全量标签汇总，请复用已有名字而不是造出 `prod` / `production` 两个近似标签。写入支持 `tags`（整体替换）、`addTags`、`removeTags`（增量增删），避免漏填就把原有标签清空。
 
-Only password authentication is implemented. First-use host keys are pinned after a successful login, not preverified against `known_hosts`. SFTP server support is required for uploads. Configuration file parsing is delegated to the Agent and so its original file format is not a fixed plugin contract. The management API applies DSH Connection browser authentication and Host/Origin checks before serving the same-origin settings page. There is no interactive PTY, download, directory sync or long-running background job support.
+## Agent 可用的工具
+
+| 工具 | 用途 |
+| --- | --- |
+| `ssh_hosts` | 列出主机（含标签）与标签汇总；**不返回密码** |
+| `ssh_host_apply` | 批量创建/更新主机，确认后原子写入 |
+| `ssh_host_create` | 创建一台主机 |
+| `ssh_host_update` | 修改一台主机，只改传入的字段；不传密码则保留原密码 |
+| `ssh_test` | 连接并认证，不执行命令 |
+| `ssh_exec` | 执行一条非交互命令 |
+| `ssh_upload` | 通过 SFTP 上传工作区内的单个文件 |
+
+`ssh_hosts`、`ssh_test`、`ssh_exec`、`ssh_upload` 都**只接受已保存且已启用**的主机 ID。上传要求远程路径是绝对路径，且**不会自动创建远程目录**；覆盖已有文件需要显式传 `overwrite: true`。
+
+## 删除命令审核
+
+`ssh_exec` 的整条命令会被扫描，命中以下任一形式即触发审核：
+
+- `rm`、`rmdir`、`unlink`、`shred`
+- `find … -delete`
+- `find … -exec` / `-execdir`
+- `xargs rm`（经管道的间接调用）
+- `rsync --delete` / `--remove-source-files`
+- `git clean`
+- `trash` / `gio trash`
+
+流程是：**检测 → 展示主机、完整命令与命中原因 → 你批准一次 → 才建立连接执行**。只有 `allowed-once` 会执行这条原样命令；拒绝、取消或无法审批都不执行。会话审批策略为 `never` 时，这些命令会被直接拒绝。
+
+**必须说明的局限**：这是对**常见命令的启发式文本检查**，不是"保证远程绝不会删文件"。脚本、变量展开、别名和其他程序都可能绕过它；本插件也拦不住你用普通 `bash` 工具自己发起的 `ssh` 命令。Docker、Kubernetes、数据库等非文件资源删除不在审核范围内。
+
+## 数据存放与安全
+
+- 主机保存在 `~/.dsh/ssh-manager/hosts.json`，可用环境变量 `DSH_SSH_HOSTS_FILE` 覆盖路径。
+- 按需求**明文保存密码**；文件权限 `0600`、目录权限 `0700`。
+- 界面与只读工具**永不返回密码**；列表只显示"密码已设置"。
+- 通过 Agent 工具导入时，密码会进入该会话的**工具入参与持久化日志**——这是"明文导入"的固有结果，请知悉。
+- 管理接口沿用 DSH Connection 的 Host/Origin 校验与浏览器认证，未认证请求会被拒绝。
+- 主机指纹为**首次信任（TOFU）**：认证成功后才记录，并未与你的 `known_hosts` 预校验。如果来源可信度重要，请先自行确认对端身份。
+
+## 已知限制
+
+只支持密码认证，尚未支持密钥/Agent 转发。上传需要服务端支持 SFTP。主机文件的格式解析交给 Agent，因此**原始文件格式不是插件的固定契约**。没有交互式 PTY、没有下载、没有目录同步，也没有后台长任务（命令最长 30 秒）。
+
+## 开发
+
+```sh
+pnpm check          # 语法检查 + 20 项测试
+```
+
+各文件职责：`lib/store.js` 主机与标签的存储和校验、`lib/ssh.js` 连接/执行/上传、`lib/risk.js` 删除命令检测、`lib/index.js` 工具与管理路由、`lib/client.js` 设置页。
+
+`scripts/layout-check.mjs` 用真实浏览器测量设置页里的行内按钮是否落在可视区内（需要本机的 Playwright 与 Chromium，通过 `PLAYWRIGHT_ENTRY`、`BROWSER_PATH` 指定，因此不纳入 `pnpm check`）。`scripts/render-check.mjs` 把设置页渲染成 DOM，便于排查渲染问题。
+
+## 许可
+
+Apache-2.0
