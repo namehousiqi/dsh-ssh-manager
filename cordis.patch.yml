@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-ssh-manager
+      name: '@workspace/dsh-ssh-manager'

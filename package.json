@@ -1,0 +1,28 @@
+{
+  "name": "@workspace/dsh-ssh-manager",
+  "version": "0.4.1",
+  "description": "Password SSH hosts and remote tools for DSH Web",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "README.md", "cordis.patch.yml"],
+  "dsh": {
+    "engines": { "dsh": ">=0.1.1-rc.1" },
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "inject": ["@deepseek-ai/dsh-client-runtime", "@deepseek-ai/dsh-client-ui-settings"],
+      "platform": "web"
+    }
+  },
+  "dependencies": { "ssh2": "^1.17.0" },
+  "devDependencies": { "jsdom": "^26.0.0", "react": "^18.3.1", "react-dom": "^18.3.1" },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check lib/index.js && node --check lib/store.js && node --check lib/ssh.js && node --check lib/risk.js && node --check lib/client.js && node --test"
+  },
+  "license": "Apache-2.0"
+}
